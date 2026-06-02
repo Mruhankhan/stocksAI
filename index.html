@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>StocksAI Live Market Desk</title>
+    <link rel="preconnect" href="https://query1.finance.yahoo.com">
+    <link rel="preconnect" href="https://api.allorigins.win">
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <main class="shell">
+      <section class="topbar" aria-label="Stock search">
+        <div>
+          <p class="eyebrow">Live US equity lookup</p>
+          <h1>StocksAI Market Desk</h1>
+        </div>
+        <form id="search-form" class="search" autocomplete="off">
+          <label class="sr-only" for="symbol-input">Search ticker</label>
+          <input id="symbol-input" name="symbol" value="AAPL" placeholder="Search any US ticker, e.g. NVDA" spellcheck="false">
+          <button type="submit">Search</button>
+        </form>
+      </section>
+
+      <section class="quote-grid" aria-live="polite">
+        <article class="panel hero-panel">
+          <div class="quote-head">
+            <div>
+              <p id="quote-name" class="company">Apple Inc.</p>
+              <h2 id="quote-symbol">AAPL</h2>
+            </div>
+            <div id="market-state" class="market-pill">Loading</div>
+          </div>
+
+          <div class="price-row">
+            <div>
+              <p class="label">Last price</p>
+              <p id="last-price" class="price">$0.00</p>
+            </div>
+            <div id="change-card" class="change neutral">
+              <span id="change-value">$0.00</span>
+              <strong id="change-percent">0.00%</strong>
+            </div>
+          </div>
+
+          <div class="chart-wrap">
+            <canvas id="price-chart" width="1100" height="380" aria-label="Intraday price chart"></canvas>
+          </div>
+
+          <div class="range-buttons" aria-label="Chart range">
+            <button data-range="1d" class="active" type="button">1D</button>
+            <button data-range="5d" type="button">5D</button>
+            <button data-range="1mo" type="button">1M</button>
+            <button data-range="6mo" type="button">6M</button>
+            <button data-range="1y" type="button">1Y</button>
+          </div>
+        </article>
+
+        <aside class="side-stack">
+          <article class="panel">
+            <div class="panel-title">
+              <h3>Snapshot</h3>
+              <span id="last-updated">--</span>
+            </div>
+            <dl class="stats">
+              <div><dt>Open</dt><dd id="stat-open">--</dd></div>
+              <div><dt>Day high</dt><dd id="stat-high">--</dd></div>
+              <div><dt>Day low</dt><dd id="stat-low">--</dd></div>
+              <div><dt>Volume</dt><dd id="stat-volume">--</dd></div>
+              <div><dt>Previous close</dt><dd id="stat-prev-close">--</dd></div>
+              <div><dt>Currency</dt><dd id="stat-currency">--</dd></div>
+            </dl>
+          </article>
+
+          <article class="panel">
+            <div class="panel-title">
+              <h3>Quick Watch</h3>
+              <span>US leaders</span>
+            </div>
+            <div id="watchlist" class="watchlist"></div>
+          </article>
+        </aside>
+      </section>
+
+      <section id="status" class="status" role="status">
+        Type a US stock ticker and press Search. Quotes auto-refresh while the page is open.
+      </section>
+    </main>
+
+    <script src="app.js"></script>
+  </body>
+</html>
