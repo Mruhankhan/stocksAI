@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>StocksAI Chart</title>
+    <title>StocksAI Market Desk</title>
     <link rel="stylesheet" href="styles.css">
   </head>
   <body>
@@ -45,6 +45,7 @@
           <button data-interval="5m" type="button">5m</button>
           <button data-interval="10m" type="button">10m</button>
           <button data-interval="15m" type="button">15m</button>
+          <button data-interval="30m" type="button">30m</button>
           <button data-interval="1h" type="button">1H</button>
         </div>
 
@@ -74,6 +75,21 @@
           <label class="scale-control">Scale
             <input id="scale-input" type="range" min="0.04" max="0.6" step="0.02" value="0.12">
           </label>
+
+          <div class="tool-group replay-tools">
+            <button id="replay-start" type="button">Replay</button>
+            <button id="replay-step" type="button">Step</button>
+            <button id="replay-stop" type="button">Live</button>
+          </div>
+
+          <form id="alert-form" class="alert-form" autocomplete="off">
+            <select id="alert-condition" aria-label="Alert condition">
+              <option value="above">Above</option>
+              <option value="below">Below</option>
+            </select>
+            <input id="alert-price" inputmode="decimal" placeholder="Price">
+            <button type="submit">Alert</button>
+          </form>
         </div>
 
         <div class="canvas-shell">
@@ -81,6 +97,12 @@
           <div id="data-window" class="data-window">Move over chart</div>
           <div class="watermark">StocksAI</div>
         </div>
+
+        <section class="insight-strip" aria-label="AI market desk">
+          <div id="ai-output" class="ai-output">Load a symbol for market structure.</div>
+          <button id="ai-analyze" type="button">Analyze</button>
+          <div id="alert-list" class="alert-list" aria-label="Price alerts"></div>
+        </section>
 
         <footer class="bottom-strip">
           <div id="status">Loading AAPL...</div>

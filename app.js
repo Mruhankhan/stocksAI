@@ -16,6 +16,15 @@ const ema9Toggle = document.querySelector("#ema9-toggle");
 const ema21Toggle = document.querySelector("#ema21-toggle");
 const vwapToggle = document.querySelector("#vwap-toggle");
 const scaleInput = document.querySelector("#scale-input");
+const replayStartButton = document.querySelector("#replay-start");
+const replayStepButton = document.querySelector("#replay-step");
+const replayStopButton = document.querySelector("#replay-stop");
+const alertForm = document.querySelector("#alert-form");
+const alertCondition = document.querySelector("#alert-condition");
+const alertPrice = document.querySelector("#alert-price");
+const alertList = document.querySelector("#alert-list");
+const aiAnalyzeButton = document.querySelector("#ai-analyze");
+const aiOutput = document.querySelector("#ai-output");
 
 const els = {
   name: document.querySelector("#quote-name"),
@@ -35,33 +44,46 @@ const els = {
 
 const watchSymbols = ["SPY", "QQQ", "DIA", "AAPL", "NVDA", "MSFT", "TSLA"];
 const REFRESH_MS = 5000;
-const intervalSeconds = { "1m": 60, "5m": 300, "10m": 600, "15m": 900, "1h": 3600 };
+const BACKFILL_MS = 60000;
+const AXIS_WIDTH = 76;
+const MIN_BAR_SPACING = 3;
+const MAX_BAR_SPACING = 48;
+const intervalSeconds = { "1m": 60, "5m": 300, "10m": 600, "15m": 900, "30m": 1800, "1h": 3600 };
 const requestFrame = window.requestAnimationFrame?.bind(window) || (callback => setTimeout(callback, 16));
 
 let activeSymbol = "AAPL";
 let activeInterval = "1m";
 let activeTool = "cursor";
+let fullCandles = [];
 let lastCandles = [];
 let compareSymbol = "";
 let compareCandles = [];
 let latestSummary;
 let refreshTimer;
+let backfillTimer;
 let countdownTimer;
 let inFlightRequest;
-let visibleCount = 120;
-let rightOffset = 0;
 let isDragging = false;
 let isDrawing = false;
 let dragStartX = 0;
-let dragStartOffset = 0;
+let dragStartFirstIndex = 0;
 let symbolSearchTimer;
 let cursorPoint = null;
 let drawingDraft = null;
 let pricePadding = Number(scaleInput.value);
 let chartFrame = null;
 let drawings = loadDrawings();
+let alerts = loadAlerts();
 let renderScheduled = false;
 let lastKnownVolume = 0;
+let barSpacing = 7;
+let firstVisibleIndex = 0;
+let followLive = true;
+let replayMode = false;
+let replayIndex = 0;
+let replayTimer;
+let refreshFailures = 0;
+let lastAnalysisSymbol = "";
 
 function normalizeSymbol(value) {
   return value.trim().toUpperCase().replace(/[^A-Z0-9.-]/g, "");
@@ -96,18 +118,71 @@ function setStatus(message) {
   statusEl.textContent = message;
 }
 
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function defaultBarSpacing(interval = activeInterval) {
+  if (interval === "1m") return 7;
+  if (interval === "1h") return 10;
+  return 8;
+}
+
+function plotWidthFromCanvas() {
+  const rect = canvas.getBoundingClientRect();
+  return Math.max(1, rect.width - AXIS_WIDTH);
+}
+
+function maxFirstIndex(candles = lastCandles) {
+  const visibleBars = plotWidthFromCanvas() / Math.max(MIN_BAR_SPACING, barSpacing);
+  return Math.max(0, candles.length - visibleBars);
+}
+
+function clampViewport(candles = lastCandles) {
+  if (!candles.length) {
+    firstVisibleIndex = 0;
+    return;
+  }
+
+  const maxFirst = maxFirstIndex(candles);
+  if (followLive) {
+    firstVisibleIndex = maxFirst;
+  } else {
+    firstVisibleIndex = clamp(firstVisibleIndex, 0, maxFirst);
+    followLive = maxFirst - firstVisibleIndex < 1.5;
+  }
+}
+
+function resetViewport() {
+  barSpacing = defaultBarSpacing();
+  followLive = true;
+  clampViewport();
+}
+
+function setReplayControls() {
+  replayStartButton.classList.toggle("active", replayMode);
+  replayStopButton.classList.toggle("active", !replayMode);
+}
+
 function scheduleRender() {
   if (renderScheduled) return;
   renderScheduled = true;
   requestFrame(() => {
     renderScheduled = false;
+    clampViewport();
     drawChart(lastCandles);
   });
 }
 
-function setCandleData(candles) {
-  lastCandles = candles;
-  lastKnownVolume = 0;
+function setCandleData(candles, options = {}) {
+  fullCandles = candles;
+  lastCandles = replayMode ? candles.slice(0, replayIndex || candles.length) : candles.slice();
+  if (options.resetVolume !== false) {
+    lastKnownVolume = 0;
+  }
+  if (options.resetViewport !== false) {
+    resetViewport();
+  }
   scheduleRender();
 }
 
@@ -123,6 +198,15 @@ function updateLatestCandle(candle) {
     const index = lastCandles.findIndex(item => item.time === candle.time);
     if (index !== -1) lastCandles[index] = candle;
   }
+  if (!replayMode) {
+    const fullIndex = fullCandles.findIndex(item => item.time === candle.time);
+    if (fullIndex !== -1) {
+      fullCandles[fullIndex] = candle;
+    } else if (!fullCandles.length || candle.time > fullCandles.at(-1).time) {
+      fullCandles.push(candle);
+    }
+  }
+  checkAlerts(candle.close);
   scheduleRender();
 }
 
@@ -145,7 +229,7 @@ function applyTradeToCandles(trade) {
       volume: size
     };
     updateLatestCandle(candle);
-    rightOffset = 0;
+    followLive = true;
     return candle;
   }
 
@@ -190,6 +274,65 @@ function saveDrawings() {
   localStorage.setItem("stocksai.drawings", JSON.stringify(drawings));
 }
 
+function loadAlerts() {
+  if (typeof localStorage === "undefined") return [];
+  try {
+    return JSON.parse(localStorage.getItem("stocksai.alerts") || "[]");
+  } catch {
+    return [];
+  }
+}
+
+function saveAlerts() {
+  if (typeof localStorage === "undefined") return;
+  localStorage.setItem("stocksai.alerts", JSON.stringify(alerts));
+}
+
+function renderAlerts() {
+  alertList.innerHTML = "";
+  const symbolAlerts = alerts.filter(item => item.symbol === activeSymbol);
+  if (!symbolAlerts.length) {
+    alertList.textContent = "No alerts";
+    return;
+  }
+
+  symbolAlerts.slice(-4).forEach(item => {
+    const pill = document.createElement("span");
+    pill.className = `alert-pill${item.triggered ? " triggered" : ""}`;
+    pill.textContent = `${item.condition === "above" ? ">" : "<"} ${fmtPrice(item.price)}`;
+
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.textContent = "x";
+    remove.addEventListener("click", () => {
+      alerts = alerts.filter(alert => alert.id !== item.id);
+      saveAlerts();
+      renderAlerts();
+    });
+
+    pill.append(remove);
+    alertList.append(pill);
+  });
+}
+
+function checkAlerts(price) {
+  if (!Number.isFinite(price)) return;
+  let triggered = false;
+  alerts = alerts.map(item => {
+    if (item.symbol !== activeSymbol || item.triggered) return item;
+    const hit = item.condition === "above" ? price >= item.price : price <= item.price;
+    if (!hit) return item;
+    triggered = true;
+    return { ...item, triggered: true, triggeredAt: Date.now() };
+  });
+
+  if (triggered) {
+    saveAlerts();
+    renderAlerts();
+    setStatus(`${activeSymbol} price alert triggered at ${fmtPrice(price)}.`);
+  }
+}
+
 function drawingKey() {
   return `${activeSymbol}:${activeInterval}`;
 }
@@ -201,9 +344,10 @@ function visibleDrawings() {
 
 function candleAtX(x) {
   if (!chartFrame) return null;
-  const index = Math.round((x - chartFrame.firstX) / chartFrame.candleGap);
-  if (index < 0 || index >= chartFrame.visibleCandles.length) return null;
-  return chartFrame.visibleCandles[index];
+  if (x < 0 || x > chartFrame.plotWidth) return null;
+  const index = Math.round(chartFrame.firstVisibleIndex + (x / chartFrame.barSpacing) - 0.5);
+  if (index < 0 || index >= chartFrame.candles.length) return null;
+  return chartFrame.candles[index];
 }
 
 function priceAtY(y) {
@@ -214,9 +358,9 @@ function priceAtY(y) {
 
 function xForTime(time) {
   if (!chartFrame) return null;
-  const index = chartFrame.visibleCandles.findIndex(candle => candle.time === time);
+  const index = chartFrame.candles.findIndex(candle => candle.time === time);
   if (index === -1) return null;
-  return chartFrame.xFor(index);
+  return chartFrame.xForIndex(index);
 }
 
 function formatTime(seconds) {
@@ -324,6 +468,28 @@ function extractYahooCandles(result, interval = activeInterval) {
     Number.isFinite(candle.close)
   );
   return aggregateCandles(candles, interval);
+}
+
+function mergeCandles(existing, incoming) {
+  const byTime = new Map(existing.map(candle => [candle.time, candle]));
+  incoming.forEach(candle => byTime.set(candle.time, candle));
+  return [...byTime.values()].sort((a, b) => a.time - b.time);
+}
+
+async function backfillRecentCandles() {
+  if (replayMode) return;
+  try {
+    const chart = await loadChart(activeSymbol, activeInterval);
+    const incoming = extractYahooCandles(chart, activeInterval);
+    const merged = mergeCandles(fullCandles, incoming);
+    setCandleData(merged, { resetViewport: false, resetVolume: false });
+    refreshFailures = 0;
+  } catch (error) {
+    refreshFailures += 1;
+    if (refreshFailures > 1) {
+      setStatus(error.message || `Waiting to reconnect ${activeSymbol} data.`);
+    }
+  }
 }
 
 function getSummaryPrice(summary) {
@@ -467,6 +633,10 @@ function applySummary(summary, isLive = false) {
   els.change.textContent = `${change >= 0 ? "+" : ""}${fmtPrice(change)} (${changePercent >= 0 ? "+" : ""}${changePercent.toFixed(2)}%)`;
   els.change.className = `quote-change ${signClass}`;
   els.marketState.textContent = isLive ? `${getSessionPriceLabel(summary)} update` : getSessionPriceLabel(summary);
+  checkAlerts(price);
+  if (lastAnalysisSymbol === activeSymbol) {
+    updateAnalysis();
+  }
   scheduleRender();
 }
 
@@ -576,16 +746,17 @@ function drawIndicators(candles) {
 
 function drawCompareOverlay() {
   if (!chartFrame || !compareSymbol || compareCandles.length < 2) return;
-  const count = chartFrame.visibleCandles.length;
-  const end = compareCandles.length - rightOffset;
-  const compareVisible = compareCandles.slice(Math.max(0, end - count), end);
-  if (compareVisible.length < 2) return;
+  const compareByTime = new Map(compareCandles.map(candle => [candle.time, candle]));
+  const paired = chartFrame.visibleCandles
+    .map(candle => ({ main: candle, compare: compareByTime.get(candle.time) }))
+    .filter(item => item.compare);
+  if (paired.length < 2) return;
 
-  const mainBase = chartFrame.visibleCandles[0].close;
-  const compareBase = compareVisible[0].close;
-  const normalized = compareVisible.map((candle, index) => ({
-    time: chartFrame.visibleCandles[index]?.time,
-    value: mainBase * (candle.close / compareBase)
+  const mainBase = paired[0].main.close;
+  const compareBase = paired[0].compare.close;
+  const normalized = paired.map(item => ({
+    time: item.main.time,
+    value: mainBase * (item.compare.close / compareBase)
   })).filter(point => Number.isFinite(point.value) && Number.isFinite(point.time));
 
   drawSeries(normalized, "#0ea5e9", 2.5);
@@ -658,8 +829,10 @@ function drawCrosshair() {
   ctx.strokeStyle = "#64748b";
   ctx.lineWidth = 1;
   ctx.beginPath();
-  ctx.moveTo(chartFrame.xFor(chartFrame.visibleCandles.indexOf(candle)), 0);
-  ctx.lineTo(chartFrame.xFor(chartFrame.visibleCandles.indexOf(candle)), chartFrame.height);
+  const candleIndex = chartFrame.candles.indexOf(candle);
+  const candleX = chartFrame.xForIndex(candleIndex);
+  ctx.moveTo(candleX, 0);
+  ctx.lineTo(candleX, chartFrame.height);
   ctx.moveTo(0, cursorPoint.y);
   ctx.lineTo(chartFrame.plotWidth, cursorPoint.y);
   ctx.stroke();
@@ -685,17 +858,21 @@ function drawChart(candles) {
     return;
   }
 
-  const axisWidth = 76;
+  const axisWidth = AXIS_WIDTH;
   const topPad = 18;
   const volumeHeight = Math.max(110, height * 0.2);
   const bottomPad = 24;
   const chartHeight = height - topPad - volumeHeight - bottomPad;
-  const plotWidth = width - axisWidth;
-  visibleCount = Math.max(20, Math.min(visibleCount, candles.length));
-  rightOffset = Math.max(0, Math.min(rightOffset, Math.max(0, candles.length - visibleCount)));
-  const end = candles.length - rightOffset;
-  const start = Math.max(0, end - visibleCount);
-  const visibleCandles = candles.slice(start, end);
+  const plotWidth = Math.max(1, width - axisWidth);
+
+  barSpacing = clamp(barSpacing, MIN_BAR_SPACING, MAX_BAR_SPACING);
+  clampViewport(candles);
+
+  const firstIndex = Math.max(0, Math.floor(firstVisibleIndex) - 2);
+  const lastIndex = Math.min(candles.length, Math.ceil(firstVisibleIndex + plotWidth / barSpacing) + 2);
+  const visibleCandles = candles.slice(firstIndex, lastIndex);
+  if (!visibleCandles.length) return;
+
   let maxPrice = Math.max(...visibleCandles.map(candle => candle.high));
   let minPrice = Math.min(...visibleCandles.map(candle => candle.low));
   const rawSpan = maxPrice - minPrice || 1;
@@ -703,20 +880,24 @@ function drawChart(candles) {
   minPrice -= rawSpan * pricePadding;
   const priceSpan = maxPrice - minPrice || 1;
   const maxVolume = Math.max(...visibleCandles.map(candle => candle.volume || 0), 1);
-  const candleGap = plotWidth / visibleCandles.length;
-  const bodyWidth = Math.max(2, Math.min(28, candleGap * 0.68));
+  const bodyWidth = Math.max(2, Math.min(28, barSpacing * 0.68));
   const yFor = price => topPad + ((maxPrice - price) / priceSpan) * chartHeight;
-  const xFor = index => 6 + index * candleGap + candleGap / 2;
+  const xForIndex = index => (index - firstVisibleIndex) * barSpacing + barSpacing / 2;
+  const xFor = index => xForIndex(firstIndex + index);
   chartFrame = {
+    candles,
     visibleCandles,
+    firstIndex,
+    firstVisibleIndex,
     plotWidth,
     topPad,
     chartHeight,
     priceSpan,
     maxPrice,
     minPrice,
-    candleGap,
+    barSpacing,
     firstX: xFor(0),
+    xForIndex,
     xFor,
     yFor,
     width,
@@ -746,8 +927,14 @@ function drawChart(candles) {
     ctx.stroke();
   }
 
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(0, 0, plotWidth, height - bottomPad + 4);
+  ctx.clip();
+
   visibleCandles.forEach((candle, index) => {
     const x = xFor(index);
+    if (x < -barSpacing || x > plotWidth + barSpacing) return;
     const up = candle.close >= candle.open;
     const color = up ? "#089981" : "#f23645";
     const yOpen = yFor(candle.open);
@@ -774,6 +961,7 @@ function drawChart(candles) {
   drawIndicators(candles);
   drawCompareOverlay();
   drawDrawingLayer();
+  ctx.restore();
 
   const last = visibleCandles.at(-1);
   const lastY = yFor(last.close);
@@ -789,6 +977,18 @@ function drawChart(candles) {
   ctx.fillStyle = "#ffffff";
   ctx.font = "700 12px system-ui";
   ctx.fillText(last.close.toFixed(2), plotWidth + 13, lastY + 4);
+
+  ctx.fillStyle = "#8d96a0";
+  ctx.font = "12px system-ui";
+  const labelEvery = Math.max(1, Math.ceil(90 / barSpacing));
+  visibleCandles.forEach((candle, index) => {
+    const absoluteIndex = firstIndex + index;
+    if (absoluteIndex % labelEvery !== 0) return;
+    const x = xFor(index);
+    if (x < 12 || x > plotWidth - 30) return;
+    ctx.fillText(formatTime(candle.time).replace(",", ""), x - 26, height - 7);
+  });
+
   drawCrosshair();
 }
 
@@ -797,6 +997,104 @@ function pointFromEvent(event) {
   const price = priceAtY(event.offsetY);
   if (!candle || !Number.isFinite(price)) return null;
   return { time: candle.time, price };
+}
+
+function replayStep() {
+  if (!replayMode || replayIndex >= fullCandles.length) {
+    stopReplay();
+    return;
+  }
+
+  updateLatestCandle(fullCandles[replayIndex]);
+  replayIndex += 1;
+  followLive = true;
+  if (replayIndex >= fullCandles.length) {
+    stopReplay();
+  }
+}
+
+function startReplay() {
+  if (fullCandles.length < 30) {
+    setStatus("Load more candles before replay.");
+    return;
+  }
+
+  clearInterval(refreshTimer);
+  clearInterval(backfillTimer);
+  replayMode = true;
+  replayIndex = Math.max(20, Math.floor(fullCandles.length * 0.65));
+  lastCandles = fullCandles.slice(0, replayIndex);
+  followLive = true;
+  setReplayControls();
+  setStatus(`${activeSymbol} replay running from ${formatTime(lastCandles.at(-1).time)}.`);
+  scheduleRender();
+
+  clearInterval(replayTimer);
+  replayTimer = setInterval(replayStep, 700);
+}
+
+function stopReplay(options = {}) {
+  clearInterval(replayTimer);
+  const wasReplay = replayMode;
+  replayMode = false;
+  if (fullCandles.length) {
+    lastCandles = fullCandles.slice();
+  }
+  followLive = true;
+  setReplayControls();
+  scheduleRender();
+  if (wasReplay && options.resumeLive !== false) {
+    startAutoRefresh();
+    setStatus(`${activeSymbol} live view restored.`);
+  }
+}
+
+function average(values) {
+  const clean = values.filter(value => Number.isFinite(value));
+  if (!clean.length) return undefined;
+  return clean.reduce((total, value) => total + value, 0) / clean.length;
+}
+
+function generateAnalysis() {
+  if (lastCandles.length < 5) {
+    return "Need more candles before analysis.";
+  }
+
+  const last = lastCandles.at(-1);
+  const previous = lastCandles.at(-2);
+  const recent = lastCandles.slice(-30);
+  const ema9 = calculateEma(lastCandles, 9).at(-1)?.value;
+  const ema21 = calculateEma(lastCandles, 21).at(-1)?.value;
+  const vwap = calculateVwap(lastCandles).at(-1)?.value;
+  const recentHigh = Math.max(...recent.map(candle => candle.high));
+  const recentLow = Math.min(...recent.map(candle => candle.low));
+  const avgVolume = average(recent.slice(0, -1).map(candle => candle.volume || 0)) || 0;
+  const volumeRatio = avgVolume ? (last.volume || 0) / avgVolume : 0;
+  const candleMove = last.close - previous.close;
+  const trend = ema9 && ema21
+    ? ema9 > ema21 ? "short-term trend is above EMA 21" : "short-term trend is below EMA 21"
+    : "EMA trend is forming";
+  const vwapPosition = vwap
+    ? last.close >= vwap ? "price is above VWAP" : "price is below VWAP"
+    : "VWAP is forming";
+  const rangePosition = last.close >= recentHigh * 0.997
+    ? "testing the recent high"
+    : last.close <= recentLow * 1.003
+      ? "near the recent low"
+      : "inside the recent range";
+  const volumeText = volumeRatio >= 1.5
+    ? `volume is elevated at ${volumeRatio.toFixed(1)}x recent pace`
+    : "volume is near normal pace";
+  const zoneCount = visibleDrawings().filter(item => item.type === "box" || item.type === "level").length;
+  const zoneText = zoneCount ? `${zoneCount} saved zone${zoneCount === 1 ? "" : "s"} on this interval` : "no saved zones on this interval";
+  const direction = candleMove >= 0 ? "green" : "red";
+
+  lastAnalysisSymbol = activeSymbol;
+  return `${activeSymbol} ${activeInterval}: latest candle is ${direction} by ${fmtPrice(Math.abs(candleMove))}; ${trend}; ${vwapPosition}; ${rangePosition}; ${volumeText}; ${zoneText}.`;
+}
+
+function updateAnalysis() {
+  aiOutput.textContent = generateAnalysis();
 }
 
 async function search(symbol, options = {}) {
@@ -809,13 +1107,15 @@ async function search(symbol, options = {}) {
   activeSymbol = normalized;
   input.value = normalized;
   if (!options.silent) setStatus(`Loading ${normalized}...`);
+  if (replayMode) {
+    stopReplay({ resumeLive: false });
+  }
 
   try {
     inFlightRequest?.abort();
     inFlightRequest = new AbortController();
     const chart = await loadChart(normalized, activeInterval, inFlightRequest.signal);
     setCandleData(extractYahooCandles(chart, activeInterval));
-    rightOffset = 0;
     try {
       const summary = await loadSummary(normalized, inFlightRequest.signal);
       applySummary(summary);
@@ -828,6 +1128,8 @@ async function search(symbol, options = {}) {
     }
     startAutoRefresh();
     startCountdown();
+    renderAlerts();
+    updateAnalysis();
     const session = getMarketSession();
     setStatus(session.allowsCandles
       ? `${normalized} updating every 5 seconds. ${activeInterval} candle timer is live.`
@@ -840,14 +1142,22 @@ async function search(symbol, options = {}) {
 
 function startAutoRefresh() {
   clearInterval(refreshTimer);
+  clearInterval(backfillTimer);
   refreshTimer = setInterval(async () => {
+    if (replayMode) return;
     try {
       const summary = await loadSummary(activeSymbol);
       applySummary(summary, true);
+      refreshFailures = 0;
     } catch (error) {
+      refreshFailures += 1;
       setStatus(error.message || `Could not refresh ${activeSymbol}.`);
+      if (refreshFailures > 1) {
+        backfillRecentCandles();
+      }
     }
   }, REFRESH_MS);
+  backfillTimer = setInterval(backfillRecentCandles, BACKFILL_MS);
 }
 
 function startCountdown() {
@@ -909,6 +1219,7 @@ toolButtons.forEach(button => {
 clearDrawingsButton.addEventListener("click", () => {
   drawings = drawings.filter(item => item.key !== drawingKey());
   saveDrawings();
+  updateAnalysis();
   scheduleRender();
 });
 
@@ -921,27 +1232,72 @@ scaleInput.addEventListener("input", () => {
   scheduleRender();
 });
 
+replayStartButton.addEventListener("click", startReplay);
+
+replayStepButton.addEventListener("click", () => {
+  if (!replayMode) {
+    startReplay();
+    clearInterval(replayTimer);
+  }
+  replayStep();
+});
+
+replayStopButton.addEventListener("click", () => stopReplay());
+
+alertForm.addEventListener("submit", event => {
+  event.preventDefault();
+  const price = asNumber(alertPrice.value);
+  if (!Number.isFinite(price)) {
+    setStatus("Enter a valid alert price.");
+    return;
+  }
+
+  alerts.push({
+    id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    symbol: activeSymbol,
+    condition: alertCondition.value,
+    price,
+    triggered: false,
+    createdAt: Date.now()
+  });
+  alertPrice.value = "";
+  saveAlerts();
+  renderAlerts();
+  setStatus(`${activeSymbol} alert saved at ${fmtPrice(price)}.`);
+});
+
+aiAnalyzeButton.addEventListener("click", updateAnalysis);
+
 intervalButtons.forEach(button => {
   button.addEventListener("click", () => {
     intervalButtons.forEach(item => item.classList.remove("active"));
     button.classList.add("active");
     activeInterval = button.dataset.interval;
-    visibleCount = activeInterval === "1m" ? 120 : activeInterval === "1h" ? 60 : 80;
+    barSpacing = defaultBarSpacing(activeInterval);
+    followLive = true;
     search(activeSymbol);
   });
 });
 
 window.addEventListener("resize", scheduleRender);
 
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") {
+    backfillRecentCandles();
+  }
+});
+
 canvas.addEventListener("wheel", event => {
   event.preventDefault();
   if (lastCandles.length < 2) return;
-  const rect = canvas.getBoundingClientRect();
-  const pointerRatio = Math.max(0, Math.min(1, event.offsetX / Math.max(1, rect.width - 76)));
-  const oldCount = visibleCount;
-  visibleCount = Math.round(Math.max(20, Math.min(lastCandles.length, visibleCount * (event.deltaY < 0 ? 0.82 : 1.18))));
-  const delta = oldCount - visibleCount;
-  rightOffset = Math.max(0, Math.min(lastCandles.length - visibleCount, Math.round(rightOffset + delta * (1 - pointerRatio))));
+  const oldSpacing = barSpacing;
+  const x = clamp(event.offsetX, 0, plotWidthFromCanvas());
+  const candleUnderCursor = firstVisibleIndex + x / oldSpacing;
+  const zoomFactor = Math.exp(-event.deltaY * 0.001);
+  barSpacing = clamp(oldSpacing * zoomFactor, MIN_BAR_SPACING, MAX_BAR_SPACING);
+  firstVisibleIndex = candleUnderCursor - x / barSpacing;
+  followLive = false;
+  clampViewport();
   scheduleRender();
 }, { passive: false });
 
@@ -953,6 +1309,7 @@ canvas.addEventListener("pointerdown", event => {
   if (activeTool === "level") {
     drawings.push({ key: drawingKey(), type: "level", points: [point], color: "#2563eb" });
     saveDrawings();
+    updateAnalysis();
     scheduleRender();
     return;
   }
@@ -962,6 +1319,7 @@ canvas.addEventListener("pointerdown", event => {
     if (text) {
       drawings.push({ key: drawingKey(), type: "text", points: [point], text, color: "#111827" });
       saveDrawings();
+      updateAnalysis();
       scheduleRender();
     }
     return;
@@ -976,7 +1334,7 @@ canvas.addEventListener("pointerdown", event => {
 
   isDragging = true;
   dragStartX = event.clientX;
-  dragStartOffset = rightOffset;
+  dragStartFirstIndex = firstVisibleIndex;
   canvas.setPointerCapture(event.pointerId);
 });
 
@@ -996,10 +1354,10 @@ canvas.addEventListener("pointermove", event => {
     scheduleRender();
     return;
   }
-  const rect = canvas.getBoundingClientRect();
-  const candlesPerPixel = visibleCount / Math.max(1, rect.width - 76);
-  const deltaCandles = Math.round((event.clientX - dragStartX) * candlesPerPixel);
-  rightOffset = Math.max(0, Math.min(lastCandles.length - visibleCount, dragStartOffset + deltaCandles));
+  const deltaCandles = (event.clientX - dragStartX) / barSpacing;
+  firstVisibleIndex = dragStartFirstIndex - deltaCandles;
+  followLive = false;
+  clampViewport();
   scheduleRender();
 });
 
@@ -1009,6 +1367,7 @@ canvas.addEventListener("pointerup", event => {
     drawingDraft = null;
     isDrawing = false;
     saveDrawings();
+    updateAnalysis();
     canvas.releasePointerCapture(event.pointerId);
     scheduleRender();
     return;
@@ -1026,5 +1385,7 @@ canvas.addEventListener("pointerleave", () => {
   }
 });
 
+setReplayControls();
+renderAlerts();
 loadWatchlist();
 search(activeSymbol);

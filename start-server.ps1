@@ -179,8 +179,12 @@ function Get-ExchangeSymbols {
 
 function Get-YahooInterval([string]$Interval) {
   switch ($Interval) {
-    "5m" { @{ range = "1d"; interval = "1m" } }
-    "10m" { @{ range = "1d"; interval = "1m" } }
+    "1m" { @{ range = "1d"; interval = "1m" } }
+    "5m" { @{ range = "5d"; interval = "1m" } }
+    "10m" { @{ range = "5d"; interval = "1m" } }
+    "15m" { @{ range = "5d"; interval = "1m" } }
+    "30m" { @{ range = "5d"; interval = "1m" } }
+    "1h" { @{ range = "1mo"; interval = "5m" } }
     default { @{ range = "1d"; interval = "1m" } }
   }
 }
