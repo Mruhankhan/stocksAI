@@ -32,7 +32,7 @@ Or double-click `run-app.bat`, paste your FinImpulse token, and keep that window
 
 ```text
 Runtime: Python
-Build Command: pip install -r requirements.txt
+Build Command: pip install -r requirements-render.txt
 Start Command: python server.py
 ```
 
