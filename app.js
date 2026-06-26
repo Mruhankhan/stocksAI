@@ -68,6 +68,7 @@ let isDrawing = false;
 let dragStartX = 0;
 let dragStartFirstIndex = 0;
 let symbolSearchTimer;
+let lastAutoSearchSymbol = "";
 let cursorPoint = null;
 let drawingDraft = null;
 let pricePadding = Number(scaleInput.value);
@@ -423,6 +424,17 @@ async function loadSymbolSuggestions(query) {
     option.label = `${item.symbol} - ${item.description} (${item.exchange})`;
     symbolOptions.append(option);
   });
+}
+
+function isSuggestedSymbol(symbol) {
+  return [...symbolOptions.options].some(option => normalizeSymbol(option.value) === symbol);
+}
+
+function searchSelectedSuggestion() {
+  const symbol = normalizeSymbol(input.value);
+  if (!symbol || symbol === lastAutoSearchSymbol || !isSuggestedSymbol(symbol)) return;
+  lastAutoSearchSymbol = symbol;
+  search(symbol);
 }
 
 function bucketStart(seconds, interval = activeInterval) {
@@ -1184,8 +1196,17 @@ form.addEventListener("submit", event => {
 });
 
 input.addEventListener("input", () => {
+  const symbol = normalizeSymbol(input.value);
+  if (symbol !== lastAutoSearchSymbol) {
+    lastAutoSearchSymbol = "";
+  }
   clearTimeout(symbolSearchTimer);
   symbolSearchTimer = setTimeout(() => loadSymbolSuggestions(input.value), 150);
+  searchSelectedSuggestion();
+});
+
+input.addEventListener("change", () => {
+  searchSelectedSuggestion();
 });
 
 compareInput.addEventListener("input", () => {
