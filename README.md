@@ -4,6 +4,16 @@ A professional single-page stock lookup web app for US ticker symbols. Search an
 
 ## Run
 
+Render-ready Python server:
+
+```powershell
+python server.py
+```
+
+Then open `http://localhost:4173`.
+
+The older Windows PowerShell server still works locally:
+
 From PowerShell:
 
 ```powershell
@@ -13,6 +23,21 @@ powershell -NoProfile -ExecutionPolicy Bypass -File ".\start-server.ps1" -FinImp
 Then open `http://localhost:4173`.
 
 Or double-click `run-app.bat`, paste your FinImpulse token, and keep that window open.
+
+## Deploy on Render
+
+1. Push this repo to GitHub.
+2. In Render, create a new **Web Service** from the GitHub repo.
+3. Use these settings:
+
+```text
+Runtime: Python
+Build Command: pip install -r requirements.txt
+Start Command: python server.py
+```
+
+4. Optional: add `FINIMPULSE_TOKEN` in Render's **Environment** settings if you want FinImpulse summary data. The app still uses Yahoo Finance chart data without it.
+5. Deploy. Render will give you a public URL other people can open.
 
 ## What is included
 
@@ -24,7 +49,7 @@ Or double-click `run-app.bat`, paste your FinImpulse token, and keep that window
 - Browser-local price alerts stored in `localStorage`.
 - Deterministic AI-style analysis for trend, VWAP, volume, range position, and saved zones.
 
-The app uses Yahoo Finance chart data through the local PowerShell proxy, and can merge FinImpulse summary data when you provide a token. For production-grade TradingView-style realtime behavior, replace polling with a licensed market-data WebSocket feed behind your backend, then keep using the same incremental candle-update path in `app.js`.
+The app uses Yahoo Finance chart data through the local Python server, and can merge FinImpulse summary data when you provide a token. The Windows PowerShell server is kept for local compatibility. For production-grade TradingView-style realtime behavior, replace polling with a licensed market-data WebSocket feed behind your backend, then keep using the same incremental candle-update path in `app.js`.
 
 ## Multi-LLM predictor
 
