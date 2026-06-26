@@ -224,7 +224,7 @@ select {
   width: 150px;
   border: 1px solid var(--line);
   border-radius: 5px;
-  padding: 5px 8px;
+  padding: 5px 8.2px;
   outline: none;
 }
 
