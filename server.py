@@ -7,7 +7,9 @@ from datetime import datetime, time, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from aiohttp import ClientSession, ClientTimeout, web
+from aiohttp import ClientSession, ClientTimeout
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, JSONResponse
 
 
 ROOT = Path(__file__).resolve().parent
@@ -30,14 +32,22 @@ def yahoo_interval(interval):
     return {"range": "1d", "interval": "1m"}
 
 
+async def get_http(app):
+    if "http" not in app or app["http"].closed:
+        app["http"] = ClientSession(timeout=ClientTimeout(total=30))
+    return app["http"]
+
+
 async def fetch_text(app, url, **kwargs):
-    async with app["http"].get(url, headers={"User-Agent": USER_AGENT}, **kwargs) as response:
+    http = await get_http(app)
+    async with http.get(url, headers={"User-Agent": USER_AGENT}, **kwargs) as response:
         response.raise_for_status()
         return await response.text()
 
 
 async def fetch_json(app, url, **kwargs):
-    async with app["http"].get(url, headers={"User-Agent": USER_AGENT}, **kwargs) as response:
+    http = await get_http(app)
+    async with http.get(url, headers={"User-Agent": USER_AGENT}, **kwargs) as response:
         response.raise_for_status()
         return await response.json()
 
@@ -154,7 +164,8 @@ async def finimpulse_summary(app, symbol):
     if not token:
         return None
     payload = json.dumps({"symbol": symbol})
-    async with app["http"].post(
+    http = await get_http(app)
+    async with http.post(
         "https://api.finimpulse.com/v1/summary",
         data=payload,
         headers={
@@ -215,9 +226,9 @@ async def handle_chart(request):
     symbol = clean_symbol(request.query.get("symbol"))
     interval = request.query.get("interval", "1m")
     try:
-        return web.json_response(await yahoo_chart(request.app, symbol, interval))
+        return JSONResponse(await yahoo_chart(request.app, symbol, interval))
     except Exception:
-        raise web.HTTPBadGateway(text=f"Could not fetch chart data for {symbol}.")
+        raise HTTPException(status_code=502, detail=f"Could not fetch chart data for {symbol}.")
 
 
 async def handle_summary(request):
@@ -230,15 +241,15 @@ async def handle_summary(request):
                 summary = merge_finimpulse_summary(summary, fin)
         except Exception:
             pass
-        return web.json_response(summary)
+        return JSONResponse(summary)
     except Exception:
         try:
             fin = await finimpulse_summary(request.app, symbol)
             if fin:
-                return web.json_response(fin)
+                return JSONResponse(fin)
         except Exception:
             pass
-        raise web.HTTPBadGateway(text=f"Could not fetch summary for {symbol}.")
+        raise HTTPException(status_code=502, detail=f"Could not fetch summary for {symbol}.")
 
 
 async def handle_symbols(request):
@@ -256,48 +267,88 @@ async def handle_symbols(request):
                 and (query in item["symbol"].upper() or query in item["description"].upper())
             ]
             symbols = starts + contains
-        return web.json_response(symbols[:80])
+        return JSONResponse(symbols[:80])
     except Exception:
-        raise web.HTTPBadGateway(text="Could not load NYSE/Nasdaq symbol list.")
+        raise HTTPException(status_code=502, detail="Could not load NYSE/Nasdaq symbol list.")
 
 
 async def handle_static(request):
     path = request.match_info.get("path") or "index.html"
     file_path = (ROOT / path).resolve()
     if ROOT not in file_path.parents and file_path != ROOT:
-        raise web.HTTPForbidden(text="Forbidden")
+        raise HTTPException(status_code=403, detail="Forbidden")
     if file_path.is_dir():
         file_path = file_path / "index.html"
     if not file_path.exists():
-        raise web.HTTPNotFound(text="Not found")
+        raise HTTPException(status_code=404, detail="Not found")
 
     content_type = mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
-    return web.FileResponse(file_path, headers={"Content-Type": content_type})
+    return FileResponse(file_path, media_type=content_type)
 
 
 async def startup_app(app):
-    app["http"] = ClientSession(timeout=ClientTimeout(total=30))
+    await get_http(app)
 
 
 async def cleanup_app(app):
-    await app["http"].close()
+    if "http" in app and not app["http"].closed:
+        await app["http"].close()
 
 
 def create_app():
-    app = web.Application()
-    app.on_startup.append(startup_app)
-    app.on_cleanup.append(cleanup_app)
-    app.router.add_get("/api/chart", handle_chart)
-    app.router.add_get("/api/summary", handle_summary)
-    app.router.add_get("/api/symbols", handle_symbols)
-    app.router.add_get("/", handle_static)
-    app.router.add_get("/{path:.*}", handle_static)
+    app = FastAPI()
+    app.state.store = {}
+
+    @app.on_event("startup")
+    async def on_startup():
+        await startup_app(app.state.store)
+
+    @app.on_event("shutdown")
+    async def on_shutdown():
+        await cleanup_app(app.state.store)
+
+    def adapt_request(request, path=None):
+        return type(
+            "CompatRequest",
+            (),
+            {
+                "app": app.state.store,
+                "query": request.query_params,
+                "match_info": {"path": path or ""},
+            },
+        )()
+
+    @app.get("/api/chart")
+    async def chart(request: Request):
+        return await handle_chart(adapt_request(request))
+
+    @app.get("/api/summary")
+    async def summary(request: Request):
+        return await handle_summary(adapt_request(request))
+
+    @app.get("/api/symbols")
+    async def symbols(request: Request):
+        return await handle_symbols(adapt_request(request))
+
+    @app.get("/")
+    async def root(request: Request):
+        return await handle_static(adapt_request(request))
+
+    @app.get("/{path:path}")
+    async def static_file(request: Request, path: str):
+        return await handle_static(adapt_request(request, path))
+
     return app
 
 
+app = create_app()
+
+
 def main():
+    import uvicorn
+
     port = int(os.getenv("PORT", "4173"))
-    web.run_app(create_app(), host="0.0.0.0", port=port)
+    uvicorn.run(app, host="0.0.0.0", port=port)
 
 
 if __name__ == "__main__":

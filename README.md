@@ -43,7 +43,7 @@ The app uses Yahoo Finance chart data through the local Python server, and can m
 Install:
 
 ```powershell
-python -m pip install -r requirements.txt
+python -m pip install -r requirements-predictor.txt
 python -m playwright install chromium
 ```
 
