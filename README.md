@@ -4,7 +4,7 @@ A professional single-page stock lookup web app for US ticker symbols. Search an
 
 ## Run
 
-Render-ready Python server:
+Local Python server:
 
 ```powershell
 python server.py
@@ -23,21 +23,6 @@ powershell -NoProfile -ExecutionPolicy Bypass -File ".\start-server.ps1" -FinImp
 Then open `http://localhost:4173`.
 
 Or double-click `run-app.bat`, paste your FinImpulse token, and keep that window open.
-
-## Deploy on Render
-
-1. Push this repo to GitHub.
-2. In Render, create a new **Web Service** from the GitHub repo.
-3. Use these settings:
-
-```text
-Runtime: Python
-Build Command: pip install -r requirements-render.txt
-Start Command: python server.py
-```
-
-4. Optional: add `FINIMPULSE_TOKEN` in Render's **Environment** settings if you want FinImpulse summary data. The app still uses Yahoo Finance chart data without it.
-5. Deploy. Render will give you a public URL other people can open.
 
 ## What is included
 
